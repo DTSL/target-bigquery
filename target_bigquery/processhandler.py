@@ -95,8 +95,6 @@ class BaseProcessHandler(object):
         if msg.stream in self.tables and not self.schemaless:
             return iter([])
 
-        self.logger.info(f"BBA process SchemaMessage : {msg.schema}")
-
         self.tables[msg.stream] = "{}{}{}".format(
             self.table_prefix, msg.stream, self.table_suffix
         )
@@ -204,7 +202,6 @@ class LoadJobProcessHandler(BaseProcessHandler):
             nr["inserted_at"] = datetime.utcnow().isoformat()
             nr["schema"] = json.dumps(schema, cls=DecimalEncoder)
             nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
-            self.logger.info(f"BBA process record : {nr}")
         else:
             nr = cleanup_record(schema, msg.record)
             nr = format_record_to_schema(nr, self.bq_schema_dicts[stream])
