@@ -26,11 +26,11 @@ SCHEMALESS_SCHEMA = [
             },
             {
                 "mode": "NULLABLE",
-                "name": "schema",
+                "name": "stream_schema",
                 "type": "STRING"
             },
             {
-                "mode": "REQUIRED",
+                "mode": "NULLABLE",
                 "name": "log_rows",
                 "type": "STRING"
             }
@@ -195,12 +195,10 @@ class LoadJobProcessHandler(BaseProcessHandler):
         schema = self.schemas[stream]
         nr = {}
 
-
-
         # don't change record if schemaless
         if self.schemaless:
             nr["inserted_at"] = datetime.utcnow().isoformat()
-            nr["schema"] = json.dumps(schema, cls=DecimalEncoder)
+            nr["stream_schema"] = json.dumps(schema["properties"] if "properties" in schema else schema, cls=DecimalEncoder)
             nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
         else:
             nr = cleanup_record(schema, msg.record)
@@ -249,7 +247,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     dataset=self.dataset,
                     table_name=tmp_table_name,
                     table_schema=SCHEMALESS_SCHEMA if self.schemaless else self.bq_schemas[stream],
-                    table_config=self.table_configs.get(stream, {}),
+                    table_config={"partition_field": "inserted_at"} if self.schemaless else self.table_configs.get(stream, {}),
                     # key_props=self.key_properties[stream],
                     # metadata_columns=self.add_metadata_columns,
                     truncate=True,
