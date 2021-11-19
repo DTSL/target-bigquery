@@ -71,6 +71,7 @@ def main():
     location = config.get("location", "US")
     validate_records = config.get("validate_records", True)
     add_metadata_columns = config.get("add_metadata_columns", True)
+    schemaless = config.get("schemaless", False)
 
     # we can pass merge state option via CLI param
     merge_state_messages_cli = flags.merge_state_messages
@@ -121,6 +122,7 @@ def main():
             table_prefix=table_prefix,
             table_suffix=table_suffix,
             add_metadata_columns=add_metadata_columns,
+            schemaless=schemaless,
             table_configs=table_configs,
             max_cache=max_cache
         )

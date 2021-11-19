@@ -18,6 +18,24 @@ from target_bigquery.simplify_json_schema import simplify
 from target_bigquery.validate_json_schema import validate_json_schema_completeness, \
     check_schema_for_dupes_in_field_names
 
+SCHEMALESS_SCHEMA = [
+            {
+                "mode": "REQUIRED",
+                "name": "inserted_at",
+                "type": "TIMESTAMP"
+            },
+            {
+                "mode": "NULLABLE",
+                "name": "schema",
+                "type": "STRING"
+            },
+            {
+                "mode": "REQUIRED",
+                "name": "log_rows",
+                "type": "STRING"
+            }
+        ]
+
 
 class BaseProcessHandler(object):
 
@@ -33,6 +51,7 @@ class BaseProcessHandler(object):
         # LoadJobProcessHandler kwargs
         self.truncate = kwargs.get("truncate", False)
         self.add_metadata_columns = kwargs.get("add_metadata_columns", True)
+        self.schemaless = kwargs.get("schemaless", False)
         self.validate_records = kwargs.get("validate_records", True)
         self.table_configs = kwargs.get("table_configs", {}) or {}
         self.INIT_STATE = kwargs.get("initial_state") or {}
@@ -72,9 +91,11 @@ class BaseProcessHandler(object):
         """
         assert isinstance(msg, singer.SchemaMessage)
 
-        # only first schema sent per stream is saved
-        if msg.stream in self.tables:
+        # only first schema sent per stream is saved except if schemaless process
+        if msg.stream in self.tables and not self.schemaless:
             return iter([])
+
+        self.logger.info(f"BBA process SchemaMessage : {msg.schema}")
 
         self.tables[msg.stream] = "{}{}{}".format(
             self.table_prefix, msg.stream, self.table_suffix
@@ -174,23 +195,33 @@ class LoadJobProcessHandler(BaseProcessHandler):
             raise Exception(f"A record for stream {msg.stream} was encountered before a corresponding schema")
 
         schema = self.schemas[stream]
+        nr = {}
 
-        nr = cleanup_record(schema, msg.record)
-        nr = format_record_to_schema(nr, self.bq_schema_dicts[stream])
 
-        # schema validation may fail if data doesn't match schema in terms of data types
-        # in this case, we validate schema again on data which has been forced to match schema
-        # nr is based on msg.record, but all data from msg.record has been forced to match schema
-        if self.validate_records:
-            try:
-                validate(msg.record, schema)
-            except Exception as e:
-                validate(nr, schema)
 
-        if self.add_metadata_columns:
-            nr["_time_extracted"] = msg.time_extracted.isoformat() \
-                if msg.time_extracted else datetime.utcnow().isoformat()
-            nr["_time_loaded"] = datetime.utcnow().isoformat()
+        # don't change record if schemaless
+        if self.schemaless:
+            nr["inserted_at"] = datetime.utcnow().isoformat()
+            nr["schema"] = json.dumps(schema, cls=DecimalEncoder)
+            nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
+            self.logger.info(f"BBA process record : {nr}")
+        else:
+            nr = cleanup_record(schema, msg.record)
+            nr = format_record_to_schema(nr, self.bq_schema_dicts[stream])
+
+            # schema validation may fail if data doesn't match schema in terms of data types
+            # in this case, we validate schema again on data which has been forced to match schema
+            # nr is based on msg.record, but all data from msg.record has been forced to match schema
+            if self.validate_records:
+                try:
+                    validate(msg.record, schema)
+                except Exception as e:
+                    validate(nr, schema)
+
+            if self.add_metadata_columns:
+                nr["_time_extracted"] = msg.time_extracted.isoformat() \
+                    if msg.time_extracted else datetime.utcnow().isoformat()
+                nr["_time_loaded"] = datetime.utcnow().isoformat()
 
         data = bytes(json.dumps(nr, cls=DecimalEncoder) + "\n", "UTF-8")
         self.rows[stream].write(data)
@@ -220,7 +251,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     client=self.client,
                     dataset=self.dataset,
                     table_name=tmp_table_name,
-                    table_schema=self.bq_schemas[stream],
+                    table_schema=SCHEMALESS_SCHEMA if self.schemaless else self.bq_schemas[stream],
                     table_config=self.table_configs.get(stream, {}),
                     # key_props=self.key_properties[stream],
                     # metadata_columns=self.add_metadata_columns,

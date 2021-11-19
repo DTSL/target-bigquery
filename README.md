@@ -150,7 +150,8 @@ Sample **target-config.json** file:
     "validate_records": true,
     "add_metadata_columns": true,
     "location": "EU",
-    "table_config": "target-tables-config.json"
+    "table_config": "target-tables-config.json",
+    "schemaless": true
 }
 ```
 
