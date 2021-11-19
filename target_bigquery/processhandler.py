@@ -15,30 +15,19 @@ from target_bigquery.encoders import DecimalEncoder
 from target_bigquery.schema import build_schema, cleanup_record, format_record_to_schema
 
 from target_bigquery.simplify_json_schema import simplify
-from target_bigquery.validate_json_schema import validate_json_schema_completeness, \
-    check_schema_for_dupes_in_field_names
+from target_bigquery.validate_json_schema import (
+    validate_json_schema_completeness,
+    check_schema_for_dupes_in_field_names,
+)
 
 SCHEMALESS_SCHEMA = [
-            {
-                "mode": "REQUIRED",
-                "name": "inserted_at",
-                "type": "TIMESTAMP"
-            },
-            {
-                "mode": "NULLABLE",
-                "name": "stream_schema",
-                "type": "STRING"
-            },
-            {
-                "mode": "NULLABLE",
-                "name": "log_rows",
-                "type": "STRING"
-            }
-        ]
+    {"mode": "REQUIRED", "name": "inserted_at", "type": "TIMESTAMP"},
+    {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
+    {"mode": "NULLABLE", "name": "log_rows", "type": "STRING"},
+]
 
 
 class BaseProcessHandler(object):
-
     def __init__(self, logger, **kwargs):
         self.logger = logger
 
@@ -103,13 +92,17 @@ class BaseProcessHandler(object):
 
         validate_json_schema_completeness(self.schemas[msg.stream])
 
-        check_schema_for_dupes_in_field_names(stream_name=msg.stream, schema=self.schemas[msg.stream])
+        check_schema_for_dupes_in_field_names(
+            stream_name=msg.stream, schema=self.schemas[msg.stream]
+        )
 
         schema_simplified = simplify(self.schemas[msg.stream])
-        schema = build_schema(schema=schema_simplified,
-                              key_properties=msg.key_properties,
-                              add_metadata=self.add_metadata_columns,
-                              force_fields=self.table_configs.get(msg.stream, {}).get("force_fields", {}))
+        schema = build_schema(
+            schema=schema_simplified,
+            key_properties=msg.key_properties,
+            add_metadata=self.add_metadata_columns,
+            force_fields=self.table_configs.get(msg.stream, {}).get("force_fields", {}),
+        )
         self.bq_schema_dicts[msg.stream] = self._build_bq_schema_dict(schema)
         self.bq_schemas[msg.stream] = schema
 
@@ -118,7 +111,9 @@ class BaseProcessHandler(object):
     def on_stream_end(self):
         yield from ()
 
-    def _build_bq_schema_dict(self, schema):  # could move this to derived class but seems right to handle in base
+    def _build_bq_schema_dict(
+        self, schema
+    ):  # could move this to derived class but seems right to handle in base
         """
         Convert BigQuery schema as a list to BigQuery schema as a dictionary
 
@@ -132,14 +127,15 @@ class BaseProcessHandler(object):
             f = field if isinstance(field, dict) else field.to_api_repr()
             schema_dict[f["name"]] = f
             if f.get("fields"):
-                schema_dict[f["name"]]["fields"] = self._build_bq_schema_dict(f["fields"])
+                schema_dict[f["name"]]["fields"] = self._build_bq_schema_dict(
+                    f["fields"]
+                )
             schema_dict[f["name"]].pop("description")
             schema_dict[f["name"]].pop("name")
         return schema_dict
 
 
 class LoadJobProcessHandler(BaseProcessHandler):
-
     def __init__(self, logger, **kwargs):
         super(LoadJobProcessHandler, self).__init__(logger, **kwargs)
 
@@ -158,8 +154,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
         self.rows = {}
 
         self.client = bigquery.Client(
-            project=self.project_id,
-            location=kwargs.get("location", "US")
+            project=self.project_id, location=kwargs.get("location", "US")
         )
 
     def handle_schema_message(self, msg):
@@ -190,7 +185,9 @@ class LoadJobProcessHandler(BaseProcessHandler):
         stream = msg.stream
 
         if stream not in self.schemas:
-            raise Exception(f"A record for stream {msg.stream} was encountered before a corresponding schema")
+            raise Exception(
+                f"A record for stream {msg.stream} was encountered before a corresponding schema"
+            )
 
         schema = self.schemas[stream]
         nr = {}
@@ -198,7 +195,10 @@ class LoadJobProcessHandler(BaseProcessHandler):
         # don't change record if schemaless
         if self.schemaless:
             nr["inserted_at"] = datetime.utcnow().isoformat()
-            nr["stream_schema"] = json.dumps(schema["properties"] if "properties" in schema else schema, cls=DecimalEncoder)
+            nr["stream_schema"] = json.dumps(
+                schema["properties"] if "properties" in schema else schema,
+                cls=DecimalEncoder,
+            )
             nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
         else:
             nr = cleanup_record(schema, msg.record)
@@ -214,8 +214,11 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     validate(nr, schema)
 
             if self.add_metadata_columns:
-                nr["_time_extracted"] = msg.time_extracted.isoformat() \
-                    if msg.time_extracted else datetime.utcnow().isoformat()
+                nr["_time_extracted"] = (
+                    msg.time_extracted.isoformat()
+                    if msg.time_extracted
+                    else datetime.utcnow().isoformat()
+                )
                 nr["_time_loaded"] = datetime.utcnow().isoformat()
 
         data = bytes(json.dumps(nr, cls=DecimalEncoder) + "\n", "UTF-8")
@@ -240,38 +243,52 @@ class LoadJobProcessHandler(BaseProcessHandler):
         loaded_tmp_tables = []
         try:
             for stream in rows.keys():
-                tmp_table_name = "t_{}_{}".format(self.tables[stream], str(uuid.uuid4()).replace("-", ""))
+                tmp_table_name = "t_{}_{}".format(
+                    self.tables[stream], str(uuid.uuid4()).replace("-", "")
+                )
 
                 job = self._load_to_bq(
                     client=self.client,
                     dataset=self.dataset,
                     table_name=tmp_table_name,
-                    table_schema=SCHEMALESS_SCHEMA if self.schemaless else self.bq_schemas[stream],
-                    table_config={"partition_field": "inserted_at"} if self.schemaless else self.table_configs.get(stream, {}),
+                    table_schema=SCHEMALESS_SCHEMA
+                    if self.schemaless
+                    else self.bq_schemas[stream],
+                    table_config={"partition_field": "inserted_at"}
+                    if self.schemaless
+                    else self.table_configs.get(stream, {}),
                     # key_props=self.key_properties[stream],
                     # metadata_columns=self.add_metadata_columns,
                     truncate=True,
-                    rows=self.rows[stream]
+                    rows=self.rows[stream],
                 )
 
                 loaded_tmp_tables.append((stream, tmp_table_name))
 
             # copy tables to production tables
             for stream, tmp_table_name in loaded_tmp_tables:
-                truncate = self.truncate if stream not in self.partially_loaded_streams else False
+                truncate = (
+                    self.truncate
+                    if stream not in self.partially_loaded_streams
+                    else False
+                )
 
                 copy_config = CopyJobConfig()
                 if truncate:
                     copy_config.write_disposition = WriteDisposition.WRITE_TRUNCATE
-                    self.logger.info(f"Copy {tmp_table_name} to {self.tables[stream]} by FULL_TABLE")
+                    self.logger.info(
+                        f"Copy {tmp_table_name} to {self.tables[stream]} by FULL_TABLE"
+                    )
                 else:
                     copy_config.write_disposition = WriteDisposition.WRITE_APPEND
-                    self.logger.info(f"Copy {tmp_table_name} to {self.tables[stream]} by APPEND")
+                    self.logger.info(
+                        f"Copy {tmp_table_name} to {self.tables[stream]} by APPEND"
+                    )
 
                 self.client.copy_table(
                     sources=self.dataset.table(tmp_table_name),
                     destination=self.dataset.table(self.tables[stream]),
-                    job_config=copy_config
+                    job_config=copy_config,
                 ).result()
 
                 self.partially_loaded_streams.add(stream)
@@ -283,18 +300,22 @@ class LoadJobProcessHandler(BaseProcessHandler):
 
         finally:  # delete temp tables
             for stream, tmp_table_name in loaded_tmp_tables:
-                self.client.delete_table(table=self.dataset.table(tmp_table_name), not_found_ok=True)
+                self.client.delete_table(
+                    table=self.dataset.table(tmp_table_name), not_found_ok=True
+                )
 
-    def _load_to_bq(self,
-                    client,
-                    dataset,
-                    table_name,
-                    table_schema,
-                    table_config,
-                    # key_props,
-                    # metadata_columns,
-                    truncate,
-                    rows):
+    def _load_to_bq(
+        self,
+        client,
+        dataset,
+        table_name,
+        table_schema,
+        table_config,
+        # key_props,
+        # metadata_columns,
+        truncate,
+        rows,
+    ):
         """
         Load data to BigQuery
 
@@ -322,8 +343,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
         # partitioning
         if partition_field:
             load_config.time_partitioning = bigquery.table.TimePartitioning(
-                type_=bigquery.table.TimePartitioningType.DAY,
-                field=partition_field
+                type_=bigquery.table.TimePartitioningType.DAY, field=partition_field
             )
 
         # clustering
@@ -361,14 +381,17 @@ class LoadJobProcessHandler(BaseProcessHandler):
             if load_job and load_job.errors:
                 reason = err.errors[0]["reason"]
                 messages = [f"{err['message']}" for err in load_job.errors]
-                logger.error("reason: {reason}, errors:\n{e}".format(reason=reason, e="\n".join(messages)))
+                logger.error(
+                    "reason: {reason}, errors:\n{e}".format(
+                        reason=reason, e="\n".join(messages)
+                    )
+                )
                 err.message = f"reason: {reason}, errors: {';'.join(messages)}"
 
             raise err
 
 
 class PartialLoadJobProcessHandler(LoadJobProcessHandler):
-
     def __init__(self, logger, **kwargs):
         super(PartialLoadJobProcessHandler, self).__init__(logger, **kwargs)
 
@@ -380,7 +403,9 @@ class PartialLoadJobProcessHandler(LoadJobProcessHandler):
             yield s
 
         if sum([self.rows[s].tell() for s in self.rows.keys()]) > self.max_cache:
-            rows = {s: self.rows[s] for s in self.rows.keys() if self.rows[s].tell() > 0}
+            rows = {
+                s: self.rows[s] for s in self.rows.keys() if self.rows[s].tell() > 0
+            }
             self._do_temp_table_based_load(rows)
 
             yield self.STATE
@@ -396,9 +421,10 @@ class PartialLoadJobProcessHandler(LoadJobProcessHandler):
 
 
 class BookmarksStatePartialLoadJobProcessHandler(PartialLoadJobProcessHandler):
-
     def __init__(self, logger, **kwargs):
-        super(BookmarksStatePartialLoadJobProcessHandler, self).__init__(logger, **kwargs)
+        super(BookmarksStatePartialLoadJobProcessHandler, self).__init__(
+            logger, **kwargs
+        )
 
         self.STATE_HANDLER = kwargs.get("state_handler")
         self.EMITTED_STATE = self.STATE_HANDLER(**self.INIT_STATE)
@@ -409,11 +435,15 @@ class BookmarksStatePartialLoadJobProcessHandler(PartialLoadJobProcessHandler):
             yield s
 
         if sum([self.rows[s].tell() for s in self.rows.keys()]) > self.max_cache:
-            rows = {s: self.rows[s] for s in self.rows.keys() if self.rows[s].tell() > 0}
+            rows = {
+                s: self.rows[s] for s in self.rows.keys() if self.rows[s].tell() > 0
+            }
             for stream in rows.keys():
                 self._do_temp_table_based_load({stream: rows[stream]})
 
-                self.EMITTED_STATE["bookmarks"][stream] = self.STATE["bookmarks"][stream]
+                self.EMITTED_STATE["bookmarks"][stream] = self.STATE["bookmarks"][
+                    stream
+                ]
 
                 yield self.EMITTED_STATE
 
