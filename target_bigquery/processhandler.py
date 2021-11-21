@@ -59,7 +59,7 @@ class BaseProcessHandler(object):
 
         # schema inferer
         self.generator = SchemaGenerator(
-            input_format="dict",
+            input_format="json",
             infer_mode=False,
             keep_nulls=False,
             quoted_values_are_strings=False,
@@ -239,7 +239,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
                 cls=DecimalEncoder,
             )
             if self.infer_schema:
-                nr["infered_schema"] = json.dumps(super()._infer_schema(msg.record))
+                nr["infered_schema"] = json.dumps(super()._infer_schema(json.dumps(msg.record, cls=DecimalEncoder)))
 
             nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
         else:
