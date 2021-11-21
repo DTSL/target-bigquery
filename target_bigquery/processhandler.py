@@ -60,13 +60,7 @@ class BaseProcessHandler(object):
         # schema inferer
         self.generator = SchemaGenerator(
             input_format="json",
-            infer_mode=False,
-            keep_nulls=False,
-            quoted_values_are_strings=False,
-            debugging_interval=10000,
-            debugging_map=False,
-            sanitize_names=False,
-            ignore_invalid_lines=False,
+            ignore_invalid_lines=True,
         )
 
         self.tables = {}
@@ -234,14 +228,15 @@ class LoadJobProcessHandler(BaseProcessHandler):
         # don't change record if schemaless
         if self.schemaless:
             nr["inserted_at"] = datetime.utcnow().isoformat()
+            nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
+
             nr["stream_schema"] = json.dumps(
                 schema["properties"] if "properties" in schema else schema,
                 cls=DecimalEncoder,
             )
             if self.infer_schema:
-                nr["infered_schema"] = json.dumps(super()._infer_schema(json.dumps(msg.record, cls=DecimalEncoder)))
+                nr["infered_schema"] = json.dumps(super()._infer_schema(nr["log_rows"]))
 
-            nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
         else:
             nr = cleanup_record(schema, msg.record)
             nr = format_record_to_schema(nr, self.bq_schema_dicts[stream])
