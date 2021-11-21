@@ -57,12 +57,6 @@ class BaseProcessHandler(object):
         # PartialLoadJobProcessHandler kwargs
         self.max_cache = kwargs.get("max_cache", 1024 * 1024 * 50)
 
-        # schema inferer
-        self.generator = SchemaGenerator(
-            input_format="json",
-            ignore_invalid_lines=True,
-        )
-
         self.tables = {}
         self.schemas = {}
         self.key_properties = {}
@@ -128,13 +122,19 @@ class BaseProcessHandler(object):
         yield from ()
 
     def _infer_schema(self, rows, schema=collections.OrderedDict()):
+        # infer schema for given record
+        generator = SchemaGenerator(
+            input_format="json",
+            ignore_invalid_lines=True,
+        )
+
         # return bigquery accepted format
         if isinstance(rows, list):
-            schema_map, error_logs = self.generator.deduce_schema(
+            schema_map, error_logs = generator.deduce_schema(
                 input_data=rows, schema_map=schema
             )
         else:
-            schema_map, error_logs = self.generator.deduce_schema(
+            schema_map, error_logs = generator.deduce_schema(
                 input_data=[rows], schema_map=schema
             )
 
@@ -142,7 +142,7 @@ class BaseProcessHandler(object):
         for error in error_logs:
             self.logger.warn("Infer schema : problem on line %s: %s", error['line_number'], error['msg'])
 
-        return self.generator.flatten_schema(schema_map)
+        return generator.flatten_schema(schema_map)
 
     def _build_bq_schema_dict(
         self, schema
