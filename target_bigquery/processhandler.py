@@ -43,11 +43,6 @@ class BaseProcessHandler(object):
         # PartialLoadJobProcessHandler kwargs
         self.max_cache = kwargs.get("max_cache", 1024 * 1024 * 50)
 
-        # schema inferer
-        self.generator = SchemaGenerator(
-            input_format="json", ignore_invalid_lines=True, debugging_interval=10000
-        )
-
         self.tables = {}
         self.schemas = {}
         self.key_properties = {}
@@ -101,6 +96,7 @@ class BaseProcessHandler(object):
         self.tables[msg.stream] = "{}{}{}".format(
             self.table_prefix, msg.stream, self.table_suffix
         )
+
         self.schemas[msg.stream] = msg_schema
         self.key_properties[msg.stream] = msg.key_properties
 
@@ -126,25 +122,29 @@ class BaseProcessHandler(object):
         yield from ()
 
     def _infer_schema(self, rows, schema=collections.OrderedDict()):
+        # schema inferer
+        generator = SchemaGenerator(
+            input_format="json",
+            ignore_invalid_lines=True,
+            debugging_interval=10000,
+            infer_mode=True,
+        )
+
         # return bigquery accepted format
         if isinstance(rows, list):
-            schema_map, error_logs = self.generator.deduce_schema(
+            schema_map, error_logs = generator.deduce_schema(
                 input_data=rows, schema_map=schema
             )
         else:
-            schema_map, error_logs = self.generator.deduce_schema(
+            schema_map, error_logs = generator.deduce_schema(
                 input_data=[rows], schema_map=schema
             )
 
-        if self.generator.line_number % self.generator.debugging_interval == 0:
-            for error in error_logs:
-                self.logger.warn(
-                    "Infer schema : problem on record %s: %s",
-                    error["line_number"],
-                    error["msg"],
-                )
+        error_logs = [
+            dict(item, **{"record": rows[item["line_number"]]}) for item in error_logs
+        ]
 
-        return self.generator.flatten_schema(schema_map)
+        return generator.flatten_schema(schema_map), error_logs
 
     def _build_bq_schema_dict(
         self, schema
@@ -187,6 +187,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
 
         self.bq_schema_dicts = {}
         self.rows = {}
+        self.rows_infer_schema = {}
 
         self.client = bigquery.Client(
             project=self.project_id, location=kwargs.get("location", "US")
@@ -198,6 +199,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
 
         if msg.stream not in self.rows:
             self.rows[msg.stream] = TemporaryFile(mode="w+b")
+            self.rows_infer_schema[msg.stream] = []
 
         yield from ()
 
@@ -255,8 +257,10 @@ class LoadJobProcessHandler(BaseProcessHandler):
         data = bytes(json.dumps(nr, cls=DecimalEncoder) + "\n", "UTF-8")
         self.rows[stream].write(data)
 
-        #if self.infer_schema:
-        #    self.rows[stream] = json.dumps(msg.record, cls=DecimalEncoder)
+        if self.infer_schema:
+            self.rows_infer_schema[stream].append(
+                json.dumps(msg.record, cls=DecimalEncoder)
+            )
 
         yield from ()
 
@@ -294,6 +298,87 @@ class LoadJobProcessHandler(BaseProcessHandler):
                 )
 
                 loaded_tmp_tables.append((stream, tmp_table_name))
+
+                if self.infer_schema:
+                    tmp_file = TemporaryFile(mode="w+b")
+                    infered_schema, error_logs = super()._infer_schema(
+                        self.rows_infer_schema[stream]
+                    )
+                    row = {
+                        "_time_loaded": datetime.utcnow().isoformat(),
+                        "infered_schema": json.dumps(infered_schema),
+                        "nb_records": len(self.rows_infer_schema[stream]),
+                        "first_record": self.rows_infer_schema[stream][0],
+                        "last_record": self.rows_infer_schema[stream][-1],
+                        "error_logs": error_logs,
+                    }
+
+                    tmp_file.write(
+                        bytes(json.dumps(row, cls=DecimalEncoder) + "\n", "UTF-8")
+                    )
+
+                    job = self._load_to_bq(
+                        client=self.client,
+                        dataset=self.dataset,
+                        table_name="{}_schema".format(self.tables[stream]),
+                        table_schema=[
+                            {
+                                "mode": "NULLABLE",
+                                "name": "_time_loaded",
+                                "type": "TIMESTAMP",
+                            },
+                            {
+                                "mode": "NULLABLE",
+                                "name": "infered_schema",
+                                "type": "STRING",
+                            },
+                            {
+                                "mode": "NULLABLE",
+                                "name": "nb_records",
+                                "type": "INTEGER",
+                            },
+                            {
+                                "mode": "NULLABLE",
+                                "name": "first_record",
+                                "type": "STRING",
+                            },
+                            {
+                                "mode": "NULLABLE",
+                                "name": "last_record",
+                                "type": "STRING",
+                            },
+                            {
+                                "name": "error_logs",
+                                "type": "RECORD",
+                                "mode": "REPEATED",
+                                "fields": [
+                                    {
+                                        "name": "line_number",
+                                        "type": "INTEGER",
+                                        "mode": "NULLABLE",
+                                    },
+                                    {
+                                        "name": "msg",
+                                        "type": "STRING",
+                                        "mode": "NULLABLE",
+                                    },
+                                    {
+                                        "name": "record",
+                                        "type": "STRING",
+                                        "mode": "NULLABLE",
+                                    },
+                                ],
+                            },
+                        ],
+                        table_config={"partition_field": "_time_loaded"},
+                        # key_props=self.key_properties[stream],
+                        # metadata_columns=self.add_metadata_columns,
+                        truncate=False,
+                        rows=tmp_file,
+                    )
+
+                    self.rows_infer_schema[stream] = []
+                    tmp_file.close()
 
             # copy tables to production tables
             for stream, tmp_table_name in loaded_tmp_tables:
