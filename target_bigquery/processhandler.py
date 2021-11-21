@@ -310,7 +310,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
                         "nb_records": len(self.rows_infer_schema[stream]),
                         "first_record": self.rows_infer_schema[stream][0],
                         "last_record": self.rows_infer_schema[stream][-1],
-                        "error_logs": error_logs,
+                        "error_logs": error_logs[-100:],
                     }
 
                     tmp_file.write(
@@ -320,7 +320,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     job = self._load_to_bq(
                         client=self.client,
                         dataset=self.dataset,
-                        table_name="{}_schema".format(self.tables[stream]),
+                        table_name="{}_sdc_schema".format(self.tables[stream]),
                         table_schema=[
                             {
                                 "mode": "NULLABLE",
