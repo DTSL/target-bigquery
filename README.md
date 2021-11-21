@@ -135,11 +135,13 @@ Create a service account credential:
 Create a file called **target-config.json** in your working directory, following this sample [target-config.json](/sample_config/target-config-exchange-rates-api.json) file (or see the example below).
 
 - Required parameters are the project name `project_id` and `dataset_id`. 
-- Optional parameters are `table_suffix`, `validate records`, `add_metadata_columns`, `location` and `table_config`. 
+- Optional parameters are `table_suffix`, `validate records`, `add_metadata_columns`, `location`, `table_config`, `schemaless` and `infer_schema`
 - Default data location is "US" (if your location is not the US, you can indicate a different location in your **target-config.json** file). 
 - The data will be written to the dataset specified in your **target-config.json**. 
 - If you do not have the dataset with this name yet, it will be created. 
 - The table will be created. 
+- `schemaless` create table with unique column `record` this parameter is usful in case data source is schemaless like `mongodb`
+- `infer_schema` this parameter create new tables `_sdc_schema` with infered schema from input records : this is a better alternative to schema received from tap
 
 Sample **target-config.json** file:
 ```
@@ -151,7 +153,8 @@ Sample **target-config.json** file:
     "add_metadata_columns": true,
     "location": "EU",
     "table_config": "target-tables-config.json",
-    "schemaless": true
+    "schemaless": true,
+    "infer_schema": true
 }
 ```
 
