@@ -5,6 +5,7 @@ from datetime import datetime
 from tempfile import TemporaryFile
 
 import singer
+from bigquery_schema_generator.generate_schema import SchemaGenerator
 from google.api_core import exceptions as google_exceptions
 from google.cloud import bigquery
 from google.cloud.bigquery import LoadJobConfig, CopyJobConfig
@@ -14,18 +15,14 @@ from jsonschema import validate
 
 from target_bigquery.encoders import DecimalEncoder
 from target_bigquery.schema import build_schema, cleanup_record, format_record_to_schema
-
 from target_bigquery.simplify_json_schema import simplify
 from target_bigquery.validate_json_schema import (
     validate_json_schema_completeness,
     check_schema_for_dupes_in_field_names,
 )
-from bigquery_schema_generator.generate_schema import SchemaGenerator
 
 SCHEMALESS_SCHEMA = [
-    {"mode": "REQUIRED", "name": "inserted_at", "type": "TIMESTAMP"},
     {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
-    {"mode": "NULLABLE", "name": "log_rows", "type": "STRING"},
 ]
 
 SCHEMALESS_INFERED_SCHEMA = [
@@ -59,9 +56,7 @@ class BaseProcessHandler(object):
 
         # schema inferer
         self.generator = SchemaGenerator(
-            input_format="json",
-            ignore_invalid_lines=True,
-            debugging_interval=10000
+            input_format="json", ignore_invalid_lines=True, debugging_interval=10000
         )
 
         self.tables = {}
@@ -98,13 +93,26 @@ class BaseProcessHandler(object):
         assert isinstance(msg, singer.SchemaMessage)
 
         # only first schema sent per stream is saved except if schemaless process
-        if msg.stream in self.tables and not self.schemaless:
+        if msg.stream in self.tables:
             return iter([])
+
+        msg_schema = None
+        # if schemaless replace tap-stream schema with default one with only one column : record
+        if self.schemaless:
+            msg_schema = {
+                "properties": {"record": {"type": ["string", "null"]}},
+                "type": "object",
+            }
+            # also if self.add_metadata_columns add _time_extracted and _time_loaded column we partition table based on _time_extracted
+            if self.add_metadata_columns:
+                self.table_configs[msg.stream] = {"partition_field": "_time_extracted"}
+        else:
+            msg_schema = msg.schema
 
         self.tables[msg.stream] = "{}{}{}".format(
             self.table_prefix, msg.stream, self.table_suffix
         )
-        self.schemas[msg.stream] = msg.schema
+        self.schemas[msg.stream] = msg_schema
         self.key_properties[msg.stream] = msg.key_properties
 
         validate_json_schema_completeness(self.schemas[msg.stream])
@@ -141,7 +149,11 @@ class BaseProcessHandler(object):
 
         if self.generator.line_number % self.generator.debugging_interval == 0:
             for error in error_logs:
-                self.logger.warn("Infer schema : problem on record %s: %s", error['line_number'], error['msg'])
+                self.logger.warn(
+                    "Infer schema : problem on record %s: %s",
+                    error["line_number"],
+                    error["msg"],
+                )
 
         return self.generator.flatten_schema(schema_map)
 
@@ -228,15 +240,7 @@ class LoadJobProcessHandler(BaseProcessHandler):
 
         # don't change record if schemaless
         if self.schemaless:
-            nr["inserted_at"] = datetime.utcnow().isoformat()
-            nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
-
-            nr["stream_schema"] = json.dumps(
-                schema["properties"] if "properties" in schema else schema,
-                cls=DecimalEncoder,
-            )
-            if self.infer_schema:
-                nr["infered_schema"] = json.dumps(super()._infer_schema(nr["log_rows"]))
+            nr["record"] = json.dumps(msg.record, cls=DecimalEncoder)
 
         else:
             nr = cleanup_record(schema, msg.record)
@@ -251,13 +255,13 @@ class LoadJobProcessHandler(BaseProcessHandler):
                 except Exception as e:
                     validate(nr, schema)
 
-            if self.add_metadata_columns:
-                nr["_time_extracted"] = (
-                    msg.time_extracted.isoformat()
-                    if msg.time_extracted
-                    else datetime.utcnow().isoformat()
-                )
-                nr["_time_loaded"] = datetime.utcnow().isoformat()
+        if self.add_metadata_columns:
+            nr["_time_extracted"] = (
+                msg.time_extracted.isoformat()
+                if msg.time_extracted
+                else datetime.utcnow().isoformat()
+            )
+            nr["_time_loaded"] = datetime.utcnow().isoformat()
 
         data = bytes(json.dumps(nr, cls=DecimalEncoder) + "\n", "UTF-8")
         self.rows[stream].write(data)
@@ -285,22 +289,12 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     self.tables[stream], str(uuid.uuid4()).replace("-", "")
                 )
 
-                schema = None
-                if self.schemaless and self.infer_schema:
-                    schema = SCHEMALESS_INFERED_SCHEMA
-                elif self.schemaless:
-                    schema = SCHEMALESS_SCHEMA
-                else:
-                    schema = self.bq_schemas[stream]
-
                 job = self._load_to_bq(
                     client=self.client,
                     dataset=self.dataset,
                     table_name=tmp_table_name,
-                    table_schema=schema,
-                    table_config={"partition_field": "inserted_at"}
-                    if self.schemaless
-                    else self.table_configs.get(stream, {}),
+                    table_schema=self.bq_schemas[stream],
+                    table_config=self.table_configs.get(stream, {}),
                     # key_props=self.key_properties[stream],
                     # metadata_columns=self.add_metadata_columns,
                     truncate=True,
