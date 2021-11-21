@@ -21,17 +21,6 @@ from target_bigquery.validate_json_schema import (
     check_schema_for_dupes_in_field_names,
 )
 
-SCHEMALESS_SCHEMA = [
-    {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
-]
-
-SCHEMALESS_INFERED_SCHEMA = [
-    {"mode": "REQUIRED", "name": "inserted_at", "type": "TIMESTAMP"},
-    {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
-    {"mode": "NULLABLE", "name": "infered_schema", "type": "STRING"},
-    {"mode": "NULLABLE", "name": "log_rows", "type": "STRING"},
-]
-
 
 class BaseProcessHandler(object):
     def __init__(self, logger, **kwargs):
@@ -265,6 +254,9 @@ class LoadJobProcessHandler(BaseProcessHandler):
 
         data = bytes(json.dumps(nr, cls=DecimalEncoder) + "\n", "UTF-8")
         self.rows[stream].write(data)
+
+        #if self.infer_schema:
+        #    self.rows[stream] = json.dumps(msg.record, cls=DecimalEncoder)
 
         yield from ()
 
