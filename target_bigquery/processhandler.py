@@ -141,7 +141,7 @@ class BaseProcessHandler(object):
             )
 
         error_logs = [
-            dict(item, **{"record": rows[item["line_number"]]}) for item in error_logs
+            dict(item, **{"record": rows[item["line_number"]-1]}) for item in error_logs
         ]
 
         return generator.flatten_schema(schema_map), error_logs
