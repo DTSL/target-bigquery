@@ -1,3 +1,4 @@
+import collections
 import json
 import uuid
 from datetime import datetime
@@ -19,10 +20,18 @@ from target_bigquery.validate_json_schema import (
     validate_json_schema_completeness,
     check_schema_for_dupes_in_field_names,
 )
+from bigquery_schema_generator.generate_schema import SchemaGenerator
 
 SCHEMALESS_SCHEMA = [
     {"mode": "REQUIRED", "name": "inserted_at", "type": "TIMESTAMP"},
     {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
+    {"mode": "NULLABLE", "name": "log_rows", "type": "STRING"},
+]
+
+SCHEMALESS_INFERED_SCHEMA = [
+    {"mode": "REQUIRED", "name": "inserted_at", "type": "TIMESTAMP"},
+    {"mode": "NULLABLE", "name": "stream_schema", "type": "STRING"},
+    {"mode": "NULLABLE", "name": "infered_schema", "type": "STRING"},
     {"mode": "NULLABLE", "name": "log_rows", "type": "STRING"},
 ]
 
@@ -41,11 +50,24 @@ class BaseProcessHandler(object):
         self.truncate = kwargs.get("truncate", False)
         self.add_metadata_columns = kwargs.get("add_metadata_columns", True)
         self.schemaless = kwargs.get("schemaless", False)
+        self.infer_schema = kwargs.get("infer_schema", False)
         self.validate_records = kwargs.get("validate_records", True)
         self.table_configs = kwargs.get("table_configs", {}) or {}
         self.INIT_STATE = kwargs.get("initial_state") or {}
         # PartialLoadJobProcessHandler kwargs
         self.max_cache = kwargs.get("max_cache", 1024 * 1024 * 50)
+
+        # schema inferer
+        self.generator = SchemaGenerator(
+            input_format="dict",
+            infer_mode=False,
+            keep_nulls=False,
+            quoted_values_are_strings=False,
+            debugging_interval=10000,
+            debugging_map=False,
+            sanitize_names=False,
+            ignore_invalid_lines=False,
+        )
 
         self.tables = {}
         self.schemas = {}
@@ -110,6 +132,23 @@ class BaseProcessHandler(object):
 
     def on_stream_end(self):
         yield from ()
+
+    def _infer_schema(self, rows, schema=collections.OrderedDict()):
+        # return bigquery accepted format
+        if isinstance(rows, list):
+            schema_map, error_logs = self.generator.deduce_schema(
+                input_data=rows, schema_map=schema
+            )
+        else:
+            schema_map, error_logs = self.generator.deduce_schema(
+                input_data=[rows], schema_map=schema
+            )
+
+        # Print errors if desired.
+        for error in error_logs:
+            self.logger.warn("Infer schema : problem on line %s: %s", error['line_number'], error['msg'])
+
+        return self.generator.flatten_schema(schema_map)
 
     def _build_bq_schema_dict(
         self, schema
@@ -199,6 +238,9 @@ class LoadJobProcessHandler(BaseProcessHandler):
                 schema["properties"] if "properties" in schema else schema,
                 cls=DecimalEncoder,
             )
+            if self.infer_schema:
+                nr["infered_schema"] = json.dumps(super()._infer_schema(msg.record))
+
             nr["log_rows"] = json.dumps(msg.record, cls=DecimalEncoder)
         else:
             nr = cleanup_record(schema, msg.record)
@@ -247,13 +289,19 @@ class LoadJobProcessHandler(BaseProcessHandler):
                     self.tables[stream], str(uuid.uuid4()).replace("-", "")
                 )
 
+                schema = None
+                if self.schemaless and self.infer_schema:
+                    schema = SCHEMALESS_INFERED_SCHEMA
+                elif self.schemaless:
+                    schema = SCHEMALESS_SCHEMA
+                else:
+                    schema = self.bq_schemas[stream]
+
                 job = self._load_to_bq(
                     client=self.client,
                     dataset=self.dataset,
                     table_name=tmp_table_name,
-                    table_schema=SCHEMALESS_SCHEMA
-                    if self.schemaless
-                    else self.bq_schemas[stream],
+                    table_schema=schema,
                     table_config={"partition_field": "inserted_at"}
                     if self.schemaless
                     else self.table_configs.get(stream, {}),
