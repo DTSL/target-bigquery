@@ -56,7 +56,7 @@ def process(
                 yield s
 
         elif isinstance(msg, singer.StateMessage):
-            logger.info("Updating state with {}".format(msg.value))
+            logger.debug("Updating state with {}".format(msg.value))
             for s in handler.handle_state_message(msg):
                 logger.info(f"Pushing state: {s}")
                 yield s

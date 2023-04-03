@@ -154,7 +154,10 @@ sample [target-config.json](/sample_config/target-config-exchange-rates-api.json
     * `truncate`: Deleting all previous rows and uploading the new ones to the table
     * `incremental`: **Upserting** new rows into the table, using the **primary key** given by the tap connector
       (if it finds an old row with same key, updates it. Otherwise it inserts the new row)
+    * `schemaless` create table with unique column `record` this parameter is usful in case data source is schemaless like `mongodb`
+    * `infer_schema` this parameter create new tables `_sdc_schema` with infered schema from input records : this is a better alternative to schema received from tap
  - WARNING: We do not recommend using `incremental` option (which uses `MERGE` SQL statement). It might result in loss of production data, because historical records get updated. Instead, we recommend using the `append` replication method, which will preserve historical data. 
+
 
 Sample **target-config.json** file:
 
@@ -166,7 +169,9 @@ Sample **target-config.json** file:
     "validate_records": true,
     "add_metadata_columns": true,
     "location": "EU",
-    "table_config": "target-tables-config.json"
+    "table_config": "target-tables-config.json",
+    "schemaless": true,
+    "infer_schema": true
 }
 ```
 
